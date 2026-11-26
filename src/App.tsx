@@ -31,7 +31,8 @@ import {
   UserCheck,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useState } from 'react';
+import type { SubmitEvent } from 'react';
 
 // --- INITIAL MOCK DATA ---
 
@@ -457,10 +458,26 @@ const INITIAL_STUDENT_ROSTER = [
   },
 ];
 
+type Role = 'student' | 'teacher';
+type Quiz = (typeof INITIAL_QUIZZES)[number];
+type QuizQuestion = Quiz['questions'][number];
+type QuizDraft = Omit<Quiz, 'id' | 'totalQuestions' | 'timeLimitMinutes'> & {
+  timeLimitMinutes: number | '';
+};
+type QuizResult = {
+  correctCount: number;
+  totalQuestions: number;
+  percentage: number;
+  earnedXP: number;
+  passed: boolean;
+};
+type StudyMaterial = (typeof INITIAL_MATERIALS)[number];
+type StudentReport = (typeof INITIAL_STUDENT_ROSTER)[number];
+
 // Main App Component
 export default function App() {
   // Role State: 'student' | 'teacher'
-  const [role, setRole] = useState('student');
+  const [role, setRole] = useState<Role>('student');
 
   // Navigation State
   const [activeTab, setActiveTab] = useState('dashboard'); // student: dashboard, quizzes, library, analytics | teacher: teacher-dashboard, quiz-creator, reports
@@ -468,7 +485,6 @@ export default function App() {
   // Core App Data States
   const [quizzes, setQuizzes] = useState(INITIAL_QUIZZES);
   const [studyMaterials, setStudyMaterials] = useState(INITIAL_MATERIALS);
-  const [students, setStudents] = useState(INITIAL_STUDENT_ROSTER);
 
   // Student Profile State
   const [studentProfile, setStudentProfile] = useState({
@@ -523,20 +539,22 @@ export default function App() {
   };
 
   // --- QUIZ ENGINE STATES ---
-  const [activeQuiz, setActiveQuiz] = useState(null); // quiz object when taking quiz
+  const [activeQuiz, setActiveQuiz] = useState<Quiz | null>(null); // quiz object when taking quiz
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [selectedAnswers, setSelectedAnswers] = useState({});
+  const [selectedAnswers, setSelectedAnswers] = useState<
+    Partial<Record<QuizQuestion['id'], number>>
+  >({});
   const [timerSeconds, setTimerSeconds] = useState(0);
-  const [quizSubmitted, setQuizSubmitted] = useState(false);
-  const [quizScoreResult, setQuizScoreResult] = useState(null);
+  const [quizScoreResult, setQuizScoreResult] = useState<QuizResult | null>(null);
 
   // --- STUDY LIBRARY STATES ---
   const [librarySearch, setLibrarySearch] = useState('');
   const [librarySubjectFilter, setLibrarySubjectFilter] = useState('all');
-  const [activeMaterialModal, setActiveMaterialModal] = useState(null);
+  const [activeMaterialModal, setActiveMaterialModal] =
+    useState<StudyMaterial | null>(null);
 
   // --- TEACHER QUIZ CREATOR STATE ---
-  const [newQuiz, setNewQuiz] = useState({
+  const [newQuiz, setNewQuiz] = useState<QuizDraft>({
     title: '',
     subject: 'math',
     grade: 'Class 8',
@@ -556,18 +574,19 @@ export default function App() {
   const [creatorSuccessMessage, setCreatorSuccessMessage] = useState('');
 
   // --- REPORT CARD MODAL STATE ---
-  const [selectedStudentReport, setSelectedStudentReport] = useState(null);
+  const [selectedStudentReport, setSelectedStudentReport] =
+    useState<StudentReport | null>(null);
 
   // Toast / Banner Message
-  const [notification, setNotification] = useState(null);
+  const [notification, setNotification] = useState<string | null>(null);
 
-  const showNotification = (msg) => {
+  const showNotification = (msg: string) => {
     setNotification(msg);
     setTimeout(() => setNotification(null), 4000);
   };
 
   // Switch role reset
-  const handleRoleSwitch = (newRole) => {
+  const handleRoleSwitch = (newRole: Role) => {
     setRole(newRole);
     if (newRole === 'teacher') {
       setActiveTab('teacher-dashboard');
@@ -576,37 +595,18 @@ export default function App() {
     }
   };
 
-  // Timer Effect for active quiz
-  useEffect(() => {
-    let interval = null;
-    if (activeQuiz && !quizSubmitted && timerSeconds > 0) {
-      interval = setInterval(() => {
-        setTimerSeconds((prev) => {
-          if (prev <= 1) {
-            clearInterval(interval);
-            handleQuizSubmit(); // Auto submit on timer end
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [activeQuiz, quizSubmitted, timerSeconds]);
-
   // Start Quiz Handler
-  const handleStartQuiz = (quiz) => {
+  const handleStartQuiz = (quiz: Quiz) => {
     setActiveQuiz(quiz);
     setCurrentQuestionIndex(0);
     setSelectedAnswers({});
     setTimerSeconds(quiz.timeLimitMinutes * 60);
-    setQuizSubmitted(false);
     setQuizScoreResult(null);
   };
 
   // Answer Select Handler
-  const handleAnswerSelect = (qId, optionIdx) => {
-    if (quizSubmitted) return;
+  const handleAnswerSelect = (qId: QuizQuestion['id'], optionIdx: number) => {
+    if (quizScoreResult) return;
     setSelectedAnswers((prev) => ({
       ...prev,
       [qId]: optionIdx,
@@ -615,7 +615,7 @@ export default function App() {
 
   // Submit Quiz Handler
   const handleQuizSubmit = () => {
-    if (!activeQuiz || quizSubmitted) return;
+    if (!activeQuiz || quizScoreResult) return;
 
     let correctCount = 0;
     activeQuiz.questions.forEach((q) => {
@@ -638,7 +638,6 @@ export default function App() {
     };
 
     setQuizScoreResult(result);
-    setQuizSubmitted(true);
 
     // Update Student Profile XP & History
     setStudentProfile((prev) => {
@@ -664,23 +663,35 @@ export default function App() {
     showNotification(`🎉 Quiz Completed! You earned +${earnedXP} XP!`);
   };
 
+  const submitExpiredQuiz = useEffectEvent(handleQuizSubmit);
+
+  useEffect(() => {
+    if (!activeQuiz || quizScoreResult || timerSeconds <= 0) return;
+
+    const timeout = setTimeout(() => {
+      setTimerSeconds(timerSeconds - 1);
+      if (timerSeconds === 1) submitExpiredQuiz();
+    }, 1000);
+
+    return () => clearTimeout(timeout);
+  }, [activeQuiz, quizScoreResult, timerSeconds]);
+
   // Exit Quiz
   const handleExitQuiz = () => {
     setActiveQuiz(null);
-    setQuizSubmitted(false);
     setSelectedAnswers({});
     setQuizScoreResult(null);
   };
 
   // Format Timer mm:ss
-  const formatTime = (secs) => {
+  const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60);
     const s = secs % 60;
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
   // Bookmark / Complete Toggle Study Material
-  const toggleMaterialBookmark = (id) => {
+  const toggleMaterialBookmark = (id: StudyMaterial['id']) => {
     setStudyMaterials((prev) =>
       prev.map((item) =>
         item.id === id ? { ...item, isBookmarked: !item.isBookmarked } : item,
@@ -688,7 +699,7 @@ export default function App() {
     );
   };
 
-  const toggleMaterialCompleted = (id) => {
+  const toggleMaterialCompleted = (id: StudyMaterial['id']) => {
     setStudyMaterials((prev) =>
       prev.map((item) => {
         if (item.id === id) {
@@ -725,7 +736,7 @@ export default function App() {
     }));
   };
 
-  const handleRemoveQuestionFromNewQuiz = (index) => {
+  const handleRemoveQuestionFromNewQuiz = (index: number) => {
     if (newQuiz.questions.length <= 1) return;
     setNewQuiz((prev) => ({
       ...prev,
@@ -733,7 +744,13 @@ export default function App() {
     }));
   };
 
-  const handleQuestionChange = (index, field, value) => {
+  const handleQuestionChange = <
+    Field extends 'question' | 'correctIndex' | 'explanation',
+  >(
+    index: number,
+    field: Field,
+    value: QuizQuestion[Field],
+  ) => {
     setNewQuiz((prev) => {
       const updatedQs = [...prev.questions];
       updatedQs[index] = { ...updatedQs[index], [field]: value };
@@ -741,7 +758,7 @@ export default function App() {
     });
   };
 
-  const handleOptionChange = (qIndex, optIndex, value) => {
+  const handleOptionChange = (qIndex: number, optIndex: number, value: string) => {
     setNewQuiz((prev) => {
       const updatedQs = [...prev.questions];
       const newOpts = [...updatedQs[qIndex].options];
@@ -752,19 +769,20 @@ export default function App() {
   };
 
   // Teacher: Save & Publish New Assessment
-  const handlePublishAssessment = (e) => {
+  const handlePublishAssessment = (e: SubmitEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (newQuiz.timeLimitMinutes === '') return;
     if (!newQuiz.title.trim()) {
       alert('Please provide a quiz title.');
       return;
     }
 
-    const createdQuiz = {
+    const createdQuiz: Quiz = {
       id: 'q-' + (quizzes.length + 101),
       title: newQuiz.title,
       subject: newQuiz.subject,
       grade: newQuiz.grade,
-      timeLimitMinutes: Number(newQuiz.timeLimitMinutes),
+      timeLimitMinutes: newQuiz.timeLimitMinutes,
       totalQuestions: newQuiz.questions.length,
       xpReward: Number(newQuiz.xpReward),
       difficulty: newQuiz.difficulty,
@@ -819,7 +837,7 @@ export default function App() {
   }, [studyMaterials, librarySearch, librarySubjectFilter]);
 
   // Subject helper
-  const getSubjectInfo = (subjectId) => {
+  const getSubjectInfo = (subjectId: Quiz['subject']) => {
     return (
       INITIAL_SUBJECTS.find((s) => s.id === subjectId) || INITIAL_SUBJECTS[0]
     );
@@ -1069,7 +1087,7 @@ export default function App() {
             </div>
 
             {/* Quiz Body */}
-            {!quizSubmitted ? (
+            {!quizScoreResult ? (
               <div className="p-6 md:p-8">
                 {/* Question Navigator Pills */}
                 <div className="flex items-center justify-between mb-6 pb-4 border-b border-slate-100">
@@ -2133,11 +2151,15 @@ export default function App() {
                               type="number"
                               min="1"
                               max="60"
+                              required
                               value={newQuiz.timeLimitMinutes}
                               onChange={(e) =>
                                 setNewQuiz({
                                   ...newQuiz,
-                                  timeLimitMinutes: e.target.value,
+                                  timeLimitMinutes:
+                                    e.currentTarget.value === ''
+                                      ? ''
+                                      : e.currentTarget.valueAsNumber,
                                 })
                               }
                               className="w-full px-4 py-2 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
@@ -2310,7 +2332,7 @@ export default function App() {
                           Class 8 - Section A (2026 Batch)
                         </h3>
                         <span className="text-xs bg-slate-100 text-slate-600 px-3 py-1 rounded-full font-semibold">
-                          Total Roster: {students.length} Students
+                          Total Roster: {INITIAL_STUDENT_ROSTER.length} Students
                         </span>
                       </div>
 
@@ -2328,7 +2350,7 @@ export default function App() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {students.map((st) => (
+                            {INITIAL_STUDENT_ROSTER.map((st) => (
                               <tr key={st.id} className="hover:bg-slate-50">
                                 <td className="py-3 px-4 font-bold text-slate-500">
                                   #{st.roll}
